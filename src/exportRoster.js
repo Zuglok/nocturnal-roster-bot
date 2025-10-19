@@ -3,6 +3,7 @@
 // Data is written as plain text (valueInputOption: "RAW") to avoid any conversion in Google Sheets.
 
 import { cfg } from "./config.js";
+import { MessageFlags } from "discord.js";
 
 // Sheet title to write to
 const RAW_SHEET_NAME = "Raw Discord Data";
@@ -54,22 +55,29 @@ async function ensureRawSheetExists(sheets) {
 }
 
 export async function handleRosterExport(interaction) {
-  // Only handle /roster export
   if (!interaction.isChatInputCommand() || interaction.commandName !== "roster") return false;
   const sub = interaction.options.getSubcommand(false);
   if (sub !== "export") return false;
 
-  // Officer role required
   if (!hasOfficerRole(interaction.member)) {
-    await interaction.reply({ content: "You need the **Officer** role to run this command.", ephemeral: true });
+    await interaction.reply({ content: "You need the **Officer** role to run this command.", flags: MessageFlags.Ephemeral });
     return true;
   }
 
-  await interaction.deferReply({ ephemeral: true });
-
-  // Make sure members cache is populated (requires GuildMembers intent + Server Members Intent in the portal)
   try {
-    await interaction.guild.members.fetch();
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+  } catch (err) {
+    if (err?.code === 10062) {
+      console.warn("[export] Interaction expired before deferReply");
+      return true;
+    }
+    throw err;
+  }
+
+  try {
+    await interaction.guild.members.fetch(); // requires GuildMembers intent + Server Members Intent
   } catch {
     await interaction.editReply({
       content: "Cannot fetch guild members. Enable **Server Members Intent** in the Developer Portal and add `GuildMembers` intent to the client."
@@ -77,7 +85,6 @@ export async function handleRosterExport(interaction) {
     return true;
   }
 
-  // Build the data (plain text)
   const header = ["ID","Username","Display Name","Roles","User Type","Join Date"];
   const rows = [];
   for (const m of interaction.guild.members.cache.values()) {
@@ -90,29 +97,29 @@ export async function handleRosterExport(interaction) {
     rows.push([id, username, display, roles, userType, joined]);
   }
 
-  // Sort by Join Date ascending to match your sample
   rows.sort((a, b) => (a[5] || "").localeCompare(b[5] || ""));
 
-  // Write to Google Sheets (RAW = plain text, no parsing)
   const { sheets } = await import("./googleClients.js");
 
-  // Ensure the sheet exists (no-op if already there)
   await ensureRawSheetExists(sheets);
 
-  // Clear all content in the target sheet (quotes are mandatory because of spaces in the title)
-  await sheets.spreadsheets.values.clear({
-    spreadsheetId: cfg.google.sheetId,
-    range: `${a1Sheet(RAW_SHEET_NAME)}A:Z`
-  });
+  try {
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: cfg.google.sheetId,
+      range: `${a1Sheet(RAW_SHEET_NAME)}A:Z`
+    });
 
-  // Write header + rows starting at A1 (RAW to avoid any conversion)
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: cfg.google.sheetId,
-    range: `${a1Sheet(RAW_SHEET_NAME)}A1`,
-    valueInputOption: "RAW",
-    requestBody: { values: [header, ...rows] }
-  });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: cfg.google.sheetId,
+      range: `${a1Sheet(RAW_SHEET_NAME)}A1`,
+      valueInputOption: "RAW", // plain text
+      requestBody: { values: [header, ...rows] }
+    });
 
-  await interaction.editReply({ content: `Exported ${rows.length} members to '${RAW_SHEET_NAME}'.` });
+    await interaction.editReply({ content: `Exported ${rows.length} members to '${RAW_SHEET_NAME}'.` });
+  } catch (err) {
+    await interaction.editReply({ content: `Export failed: ${String(err?.message || err)}` });
+  }
+
   return true;
 }

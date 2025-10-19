@@ -4,7 +4,7 @@
 // - Class columns (D..R) store "Name (Level)" or "Name (M-<Level>)" / "Name (M2-<Level>)".
 // - Class-cell note stores "AA: <n>" and "Access: <csv>".
 // - Access labels are loaded from access.txt; selection is done via an ephemeral multi-select menu with action buttons.
-// - /roster export replaces the "Raw Roster Data" sheet with guild members data (handled in exportRoster.js).
+// - /roster export replaces the "Raw Discord Data" sheet with guild members data (handled in exportRoster.js).
 
 import {
   ROSTER_SHEET_NAME, colIndexToA1,
@@ -20,7 +20,8 @@ import {
   StringSelectMenuOptionBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ComponentType
+  ComponentType,
+  MessageFlags
 } from "discord.js";
 import { handleRosterExport } from "./exportRoster.js";
 
@@ -63,7 +64,7 @@ export const rosterCommandJSON = new SlashCommandBuilder()
   // export
   .addSubcommand(sub => sub
     .setName("export")
-    .setDescription("Replace 'Raw Roster Data' with current guild members"))
+    .setDescription("Replace 'Raw Discord Data' with current guild members"))
   .toJSON();
 
 // ---- Access helpers ----
@@ -99,7 +100,7 @@ async function askAccessMenu(interaction, preselected = []) {
   const msg = await interaction.followUp({
     content: "Access selection:",
     components: [row1, row2],
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 
   const filter = i => i.user.id === interaction.user.id;
@@ -166,10 +167,23 @@ export async function handleRosterInteraction(interaction) {
 
   const sub = interaction.options.getSubcommand();
 
-  // Route export to its dedicated module
+  // Delegate export early (it gère son propre deferReply)
   if (sub === "export") {
     const handled = await handleRosterExport(interaction);
     if (handled) return;
+  }
+
+  // Defer immediately to avoid Unknown interaction if operations take >3s
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+  } catch (err) {
+    if (err?.code === 10062) { // Unknown interaction
+      console.warn("[roster] Interaction expired before deferReply");
+      return;
+    }
+    throw err;
   }
 
   if (sub === "add" || sub === "edit") {
@@ -177,8 +191,6 @@ export async function handleRosterInteraction(interaction) {
     const discordId   = interaction.user.id;
 
     let { rowNumber } = await findRowByDiscordIdOrDisplayName(discordId, displayName);
-
-    await interaction.deferReply({ ephemeral: true });
 
     if (!rowNumber) {
       if (sub === "add") {
@@ -229,8 +241,6 @@ export async function handleRosterInteraction(interaction) {
   if (sub === "remove") {
     const displayName = (interaction.member?.displayName || interaction.user.username).trim();
     const discordId   = interaction.user.id;
-
-    await interaction.deferReply({ ephemeral: true });
 
     let { rowNumber } = await findRowByDiscordIdOrDisplayName(discordId, displayName);
     if (!rowNumber) {
